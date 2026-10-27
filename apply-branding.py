@@ -47,6 +47,12 @@ change('src/server/connection.rs', 'pi.hostname = crate::whoami_hostname();',
 change('src/common.rs', 'let hostname = hostname(); // sys.hostname() return localhost on android in my test',
        f'let hostname = {rust_string(brand["remote_display_name"])}.to_owned();')
 
+# Match the URL scheme consumed by get_uri_prefix() to macOS Launch Services.
+change('flutter/macos/Runner/Info.plist', '<string>com.carriez.rustdesk</string>',
+       '<string>' + brand['bundle_identifier'] + '</string>')
+change('flutter/macos/Runner/Info.plist', '<string>rustdesk</string>',
+       '<string>' + brand['app_name'].lower() + '</string>')
+
 change('flutter/macos/Runner/Configs/AppInfo.xcconfig', 'PRODUCT_NAME = RustDesk',
        'PRODUCT_NAME = ' + brand['app_name'])
 change('flutter/macos/Runner/Configs/AppInfo.xcconfig', 'com.carriez.flutterHbb', brand['bundle_identifier'])
