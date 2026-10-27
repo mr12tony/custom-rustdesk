@@ -60,8 +60,8 @@ jobs:
           & $scanner -Scan -ScanType 3 -File (Resolve-Path scan).Path 2>&1 | Tee-Object reports/scan.log
           $scanExit = $LASTEXITCODE
           $detections = @(Get-MpThreatDetection)
-          $detections | ConvertTo-Json -Depth 8 | Set-Content reports/detections.json
-          Get-MpThreat | ConvertTo-Json -Depth 8 | Set-Content reports/threats.json
+          ConvertTo-Json -InputObject $detections -Depth 8 | Set-Content reports/detections.json
+          ConvertTo-Json -InputObject @(Get-MpThreat) -Depth 8 | Set-Content reports/threats.json
           [pscustomobject]@{ScannerExitCode=$scanExit;DetectionCount=$detections.Count;TimeUTC=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content reports/result.json
           Get-Content reports/result.json
           Get-Content reports/detections.json
