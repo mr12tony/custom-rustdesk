@@ -1,0 +1,76 @@
+name: Scan MagendaSupport Windows artifacts
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  scan:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Prepare Defender and reports
+        run: |
+          New-Item -ItemType Directory -Force reports | Out-Null
+          $status = Get-MpComputerStatus
+          $status | ConvertTo-Json -Depth 6 | Set-Content reports/defender-status.json
+          if (!$status.AMServiceEnabled -or !$status.AntivirusEnabled) {
+            throw 'Defender is unavailable on this runner; no clean verdict can be issued'
+          }
+          Update-MpSignature
+          Get-MpComputerStatus | ConvertTo-Json -Depth 6 | Set-Content reports/defender-status.json
+      - name: Download exact MSI under investigation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: MagendaSupport-test-windows-x64-msi
+          run-id: 40503380208
+          github-token: ${{ github.token }}
+          path: scan/msi
+      - name: Download uncompressed application payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: MagendaSupport-test-windows-payload-x86_64
+          run-id: 40495251189
+          github-token: ${{ github.token }}
+          path: scan/payload
+      - name: Download portable executable for comparison
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: MagendaSupport-test-windows-x64-exe
+          run-id: 40495251189
+          github-token: ${{ github.token }}
+          path: scan/portable
+      - name: Verify MSI checksum and inventory files without execution
+        run: |
+          $msi = Get-Item scan/msi/MagendaSupport-1.5.0-x86_64.msi
+          $expected = ((Get-Content scan/msi/SHA256SUMS.txt).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash $msi.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw 'MSI checksum does not match build output' }
+          Get-ChildItem scan -File -Recurse | Get-FileHash -Algorithm SHA256 | Export-Csv reports/file-hashes.csv -NoTypeInformation
+          Get-ChildItem scan -File -Recurse | Where-Object { $_.Extension -in '.exe','.dll','.sys','.msi' } | ForEach-Object {
+            $sig = Get-AuthenticodeSignature $_.FullName
+            [pscustomobject]@{File=$_.FullName;Status=$sig.Status.ToString();Subject=$sig.SignerCertificate.Subject}
+          } | Export-Csv reports/signatures.csv -NoTypeInformation
+      - name: Scan all downloaded artifacts with Defender
+        timeout-minutes: 15
+        run: |
+          $candidates = @(Get-ChildItem "$env:ProgramData/Microsoft/Windows Defender/Platform/*/MpCmdRun.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
+          $scanner = if ($candidates.Count) { $candidates[0].FullName } else { "$env:ProgramFiles/Windows Defender/MpCmdRun.exe" }
+          if (!(Test-Path $scanner)) { throw 'Defender command line scanner missing' }
+          & $scanner -Scan -ScanType 3 -File (Resolve-Path scan).Path 2>&1 | Tee-Object reports/scan.log
+          $scanExit = $LASTEXITCODE
+          $detections = @(Get-MpThreatDetection)
+          $detections | ConvertTo-Json -Depth 8 | Set-Content reports/detections.json
+          Get-MpThreat | ConvertTo-Json -Depth 8 | Set-Content reports/threats.json
+          [pscustomobject]@{ScannerExitCode=$scanExit;DetectionCount=$detections.Count;TimeUTC=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json | Set-Content reports/result.json
+          Get-Content reports/result.json
+          Get-Content reports/detections.json
+          Get-Content reports/threats.json
+          if ($scanExit -ne 0 -or $detections.Count -gt 0) { throw 'Defender reported detections or a scan error; inspect reports' }
+      - name: Preserve reports even on detection or scanner failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: MagendaSupport-Windows-scan-report
+          if-no-files-found: error
+          path: reports/
