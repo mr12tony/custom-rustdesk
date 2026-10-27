@@ -1,0 +1,51 @@
+name: Diagnose macOS Intel dependencies
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose-intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 35
+    steps:
+      - name: Checkout pinned RustDesk
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: rustdesk/rustdesk
+          ref: fada664df7a294d1d1a9ca3e7cd3637069122f17
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Flutter 3.24.5
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: '3.24.5'
+      - name: Patch Flutter like upstream
+        run: |
+          FLUTTER_ROOT="$(dirname "$(dirname "$(command -v flutter)")")"
+          git -C "$FLUTTER_ROOT" apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' "$FLUTTER_ROOT/packages/flutter/lib/src/scheduler/binding.dart"
+      - name: Record environment
+        timeout-minutes: 5
+        run: |
+          mkdir -p diagnostics
+          { uname -a; sw_vers; xcodebuild -version; flutter --version; dart --version; git --version; } 2>&1 | tee diagnostics/environment.log
+      - name: Resolve and download Dart packages
+        timeout-minutes: 15
+        working-directory: flutter
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter pub get --verbose 2>&1 | tee ../diagnostics/pub-get.log
+      - name: Save dependency resolution
+        if: success()
+        run: |
+          cp flutter/pubspec.lock diagnostics/pubspec.lock
+          git diff -- flutter/pubspec.lock > diagnostics/pubspec-lock.diff
+      - name: Upload diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-intel-dependency-diagnostics
+          if-no-files-found: warn
+          path: diagnostics/
