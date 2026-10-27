@@ -35,15 +35,6 @@ jobs:
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce
         with:
           msbuild-architecture: x86
-      - name: Prepare installer identity and icon
-        run: |
-          if (!(Test-Path payload/MagendaSupport.exe)) { throw 'Application payload missing' }
-          Copy-Item payload/data/flutter_assets/assets/icon.ico res/icon.ico -Force
-          $arp = '{"Contact":{"msi":"ARPCONTACT","v":"https://github.com/mr12tony/custom-rustdesk"},"HelpLink":{"msi":"ARPHELPLINK","v":"https://github.com/mr12tony/custom-rustdesk/issues"},"ReadMe":{"msi":"ARPREADME","v":"https://github.com/mr12tony/custom-rustdesk"}}'
-          Push-Location res/msi
-          python preprocess.py -d ../../payload --app-name MagendaSupport --manufacturer MagendaMD --version 1.5.0 --revision-version 0 --custom-arp $arp
-          if ($LASTEXITCODE -ne 0) { throw 'MSI preprocessing failed' }
-          Pop-Location
       - name: Include AGPL and corresponding-source information
         shell: python
         run: |
@@ -60,17 +51,21 @@ jobs:
           Path('res/msi/Package/License.rtf').write_text(
               '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Courier New;}}\\f0\\fs18\n'
               + rtf_escape(notice + license_text) + '}', encoding='ascii')
+          import shutil
+          Path('msi-inputs').mkdir(exist_ok=True)
+          shutil.copyfile('res/msi/Package/License.rtf', 'msi-inputs/License.rtf')
           Path('payload/LICENSE-AGPL-3.0.txt').write_text(license_text, encoding='utf-8')
           Path('payload/SOURCE-NOTICE.txt').write_text(notice, encoding='utf-8')
-      - name: Refresh payload component list with license files
-        shell: python
+      - name: Prepare installer identity and icon
         run: |
-          import runpy, sys
-          from pathlib import Path
-          sys.argv = ['res/msi/preprocess.py']
-          module = runpy.run_path('res/msi/preprocess.py', run_name='magenda_component_refresh')
-          if not module['gen_auto_component']('MagendaSupport', Path('payload').resolve()):
-              raise SystemExit('Component list refresh failed')
+          if (!(Test-Path payload/MagendaSupport.exe)) { throw 'Application payload missing' }
+          Copy-Item payload/data/flutter_assets/assets/icon.ico res/icon.ico -Force
+          $arp = '{"Contact":{"msi":"ARPCONTACT","v":"https://github.com/mr12tony/custom-rustdesk"},"HelpLink":{"msi":"ARPHELPLINK","v":"https://github.com/mr12tony/custom-rustdesk/issues"},"ReadMe":{"msi":"ARPREADME","v":"https://github.com/mr12tony/custom-rustdesk"}}'
+          Push-Location res/msi
+          python preprocess.py -d ../../payload --app-name MagendaSupport --manufacturer MagendaMD --version 1.5.0 --revision-version 0 --custom-arp $arp
+          if ($LASTEXITCODE -ne 0) { throw 'MSI preprocessing failed' }
+          Pop-Location
+          Copy-Item msi-inputs/License.rtf res/msi/Package/License.rtf -Force
       - name: Build MSI
         working-directory: res/msi
         run: |
