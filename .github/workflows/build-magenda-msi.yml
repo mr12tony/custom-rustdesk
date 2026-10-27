@@ -1,0 +1,126 @@
+name: Package MagendaSupport Windows x64 MSI
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONUTF8: '1'
+jobs:
+  package-msi:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout pinned installer sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: rustdesk/rustdesk
+          ref: fada664df7a294d1d1a9ca3e7cd3637069122f17
+          persist-credentials: false
+      - name: Download verified MagendaSupport payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: MagendaSupport-test-windows-payload-x86_64
+          run-id: 40495251189
+          github-token: ${{ github.token }}
+          path: payload
+      - name: Download corresponding application source changes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: magenda-windows-source-changes
+          run-id: 40495251189
+          github-token: ${{ github.token }}
+          path: application-source-changes
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce
+        with:
+          msbuild-architecture: x86
+      - name: Prepare installer identity and icon
+        run: |
+          if (!(Test-Path payload/MagendaSupport.exe)) { throw 'Application payload missing' }
+          Copy-Item payload/data/flutter_assets/assets/icon.ico res/icon.ico -Force
+          $arp = '{"Contact":{"msi":"ARPCONTACT","v":"https://github.com/mr12tony/custom-rustdesk"},"HelpLink":{"msi":"ARPHELPLINK","v":"https://github.com/mr12tony/custom-rustdesk/issues"},"ReadMe":{"msi":"ARPREADME","v":"https://github.com/mr12tony/custom-rustdesk"}}'
+          Push-Location res/msi
+          python preprocess.py -d ../../payload --app-name MagendaSupport --manufacturer MagendaMD --version 1.5.0 --revision-version 0 --custom-arp $arp
+          if ($LASTEXITCODE -ne 0) { throw 'MSI preprocessing failed' }
+          Pop-Location
+      - name: Include AGPL and corresponding-source information
+        shell: python
+        run: |
+          from pathlib import Path
+          source_url = 'https://github.com/mr12tony/custom-rustdesk'
+          notice = ('MagendaSupport is a modified RustDesk 1.5.0 client.\n'
+                    'Modified by MagendaMD, 2026-10-27.\n'
+                    'Original copyright notices are retained in the corresponding source.\n'
+                    f'Source modifications and build workflows: {source_url}\n'
+                    'Application payload build: GitHub Actions run 40495251189.\n\n')
+          license_text = Path('LICENCE').read_text(encoding='utf-8')
+          def rtf_escape(text):
+              return text.replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}').replace('\n', '\\par\n')
+          Path('res/msi/Package/License.rtf').write_text(
+              '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Courier New;}}\\f0\\fs18\n'
+              + rtf_escape(notice + license_text) + '}', encoding='ascii')
+          Path('payload/LICENSE-AGPL-3.0.txt').write_text(license_text, encoding='utf-8')
+          Path('payload/SOURCE-NOTICE.txt').write_text(notice, encoding='utf-8')
+      - name: Refresh payload component list with license files
+        shell: python
+        run: |
+          import runpy, sys
+          from pathlib import Path
+          sys.argv = ['res/msi/preprocess.py']
+          module = runpy.run_path('res/msi/preprocess.py', run_name='magenda_component_refresh')
+          if not module['gen_auto_component']('MagendaSupport', Path('payload').resolve()):
+              raise SystemExit('Component list refresh failed')
+      - name: Build MSI
+        working-directory: res/msi
+        run: |
+          nuget restore msi.sln
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet restore failed' }
+          msbuild msi.sln -p:Configuration=Release -p:Platform=x64 /p:TargetVersion=Windows10 /bl:msi-build.binlog
+          if ($LASTEXITCODE -ne 0) { throw 'MSBuild failed' }
+          $msi = @(Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi)
+          if ($msi.Count -ne 1) { throw 'Expected exactly one Package.msi' }
+          New-Item -ItemType Directory -Force ../../dist | Out-Null
+          Copy-Item $msi[0].FullName ../../dist/MagendaSupport-1.5.0-x86_64.msi
+      - name: Verify MSI identity and SHA256
+        run: |
+          $path = (Resolve-Path dist/MagendaSupport-1.5.0-x86_64.msi).Path
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.OpenDatabase($path, 0)
+          $properties = @{}
+          foreach ($name in @('ProductName','ProductVersion','Manufacturer','UpgradeCode','ProductCode')) {
+            $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
+            $view.Execute()
+            $record = $view.Fetch()
+            $properties[$name] = $record.StringData(1)
+            $view.Close()
+          }
+          if ($properties.ProductName -ne 'MagendaSupport') { throw 'Incorrect MSI product name' }
+          if ($properties.Manufacturer -ne 'MagendaMD') { throw 'Incorrect MSI manufacturer' }
+          if ($properties.UpgradeCode -ne '{097E17D4-0444-5D8D-BAD8-72EFF2585374}') { throw 'Unexpected MSI upgrade identity' }
+          $properties | ConvertTo-Json | Set-Content dist/msi-properties.json
+          $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          "$hash  MagendaSupport-1.5.0-x86_64.msi" | Set-Content dist/SHA256SUMS.txt
+          Get-Content dist/msi-properties.json
+          Get-Content dist/SHA256SUMS.txt
+      - name: Save generated installer source
+        if: always()
+        run: git diff --binary --output=magenda-installer.patch
+      - name: Upload installer source and diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: MagendaSupport-msi-source-and-diagnostics
+          include-hidden-files: true
+          path: |
+            magenda-installer.patch
+            application-source-changes/
+            res/msi/Package/Includes.wxi
+            res/msi/Package/License.rtf
+            res/msi/msi-build.binlog
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: MagendaSupport-test-windows-x64-msi
+          if-no-files-found: error
+          path: dist/
